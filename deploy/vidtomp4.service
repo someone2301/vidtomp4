@@ -1,0 +1,13 @@
+[Unit]
+Description=vidtomp4 web app
+After=network.target
+
+[Service]
+User=vidtomp4
+WorkingDirectory=/opt/vidtomp4
+Environment=VIDTOMP4_DIR=/var/lib/vidtomp4
+ExecStart=/opt/vidtomp4/venv/bin/gunicorn --workers 1 --threads 8 --timeout 0 --bind 127.0.0.1:8000 app:app
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

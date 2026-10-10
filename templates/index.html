@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vidtomp4</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }
+  form { display: flex; gap: .5rem; }
+  input { flex: 1; padding: .6rem; font-size: 1rem; }
+  button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
+  progress { width: 100%; margin-top: 1rem; }
+  #status { margin-top: 1rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>vidtomp4</h1>
+<p>Paste a video page URL. The video is saved as a 360p MP4 with audio.</p>
+<form id="f">
+  <input id="url" type="url" placeholder="https://..." required>
+  <button id="go">Convert</button>
+</form>
+<progress id="bar" max="100" value="0" hidden></progress>
+<div id="status"></div>
+<script>
+const $ = id => document.getElementById(id);
+$("f").onsubmit = async e => {
+  e.preventDefault();
+  $("go").disabled = true; $("bar").hidden = false; $("bar").value = 0;
+  $("status").textContent = "Queued...";
+  const r = await fetch("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"},
+                                     body: JSON.stringify({url: $("url").value})});
+  const j = await r.json();
+  if (!r.ok) { $("status").textContent = j.error; $("go").disabled = false; return; }
+  const poll = setInterval(async () => {
+    const s = await (await fetch(`/api/jobs/${j.id}`)).json();
+    $("bar").value = s.progress || 0;
+    $("status").textContent = s.status + (s.title ? ": " + s.title : "");
+    if (s.status === "done") {
+      clearInterval(poll); $("go").disabled = false;
+      $("status").innerHTML = "";
+      const a = document.createElement("a");
+      a.href = `/api/jobs/${j.id}/file`; a.textContent = "Download " + (s.title || "video") + ".mp4";
+      $("status").appendChild(a); a.click();
+    } else if (s.status === "error") {
+      clearInterval(poll); $("go").disabled = false;
+      $("status").textContent = "Error: " + s.error;
+    }
+  }, 1000);
+};
+</script>
+</body>
+</html>
