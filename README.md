@@ -10,6 +10,7 @@ A small Flask web app built on [yt-dlp](https://github.com/yt-dlp/yt-dlp). Paste
 ```sh
 python3 -m venv venv && . venv/bin/activate
 pip install -r requirements.txt
+playwright install --with-deps chromium
 python app.py        # http://127.0.0.1:8000
 ```
 
@@ -17,9 +18,10 @@ python app.py        # http://127.0.0.1:8000
 ```sh
 sudo useradd -r -s /usr/sbin/nologin vidtomp4
 sudo mkdir -p /opt/vidtomp4 /var/lib/vidtomp4
-sudo cp -r app.py templates requirements.txt /opt/vidtomp4/
+sudo cp -r app.py sniff.py templates requirements.txt /opt/vidtomp4/
 sudo python3 -m venv /opt/vidtomp4/venv
 sudo /opt/vidtomp4/venv/bin/pip install -r /opt/vidtomp4/requirements.txt
+sudo PLAYWRIGHT_BROWSERS_PATH=/opt/vidtomp4/browsers /opt/vidtomp4/venv/bin/playwright install --with-deps chromium
 sudo chown -R vidtomp4: /opt/vidtomp4 /var/lib/vidtomp4
 sudo cp deploy/vidtomp4.service /etc/systemd/system/
 sudo systemctl enable --now vidtomp4
@@ -34,6 +36,12 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 | `VIDTOMP4_DIR` | `/tmp/vidtomp4` | Where files are stored |
 | `VIDTOMP4_MAX_AGE` | `3600` | Seconds before files are deleted |
 | `VIDTOMP4_MAX_BYTES` | `1073741824` | Largest download allowed |
+| `VIDTOMP4_BROWSERS` | `2` | Max headless browsers running at once |
+| `VIDTOMP4_SNIFF_SECONDS` | `20` | How long to watch a page for a video stream |
+| `VIDTOMP4_CHROMIUM` | (unset) | Path to a Chromium binary, if not using Playwright's |
+
+## Browser fallback
+If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tries to start the player, and records network requests for HLS (`.m3u8`), DASH (`.mpd`) or MP4/WebM files. The first stream it finds is downloaded with the page as Referer, then converted to 360p MP4 as usual. It cannot handle DRM, streams with keys ffmpeg cannot get, or pages behind bot checks such as Cloudflare challenges. Each browser uses a few hundred MB of RAM.
 
 ## Notes
 - The app has no authentication. Do not expose it publicly without adding a login (for example, nginx basic auth). Anyone who can reach it can use your server's bandwidth.

@@ -1,5 +1,6 @@
 """vidtomp4: web front end for yt-dlp that saves videos as 360p MP4 files."""
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -9,6 +10,8 @@ from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 from yt_dlp import YoutubeDL
+
+from sniff import sniff
 
 DOWNLOAD_DIR = Path(os.environ.get("VIDTOMP4_DIR", "/tmp/vidtomp4"))
 MAX_AGE_SECONDS = int(os.environ.get("VIDTOMP4_MAX_AGE", "3600"))
@@ -20,7 +23,12 @@ jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
 
-def ydl_options(job_id: str, out_dir: Path) -> dict:
+def safe_name(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_.")[:80] or "video"
+
+
+def ydl_options(job_id: str, out_dir: Path, headers: dict | None = None,
+                title: str | None = None) -> dict:
     def hook(d):
         with jobs_lock:
             job = jobs[job_id]
@@ -39,7 +47,9 @@ def ydl_options(job_id: str, out_dir: Path) -> dict:
         "format_sort": ["res:360", "vcodec:h264", "acodec:m4a"],
         "merge_output_format": "mp4",
         "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
-        "outtmpl": str(out_dir / "%(title).80B.%(ext)s"),
+        "outtmpl": str(out_dir / (safe_name(title) + ".%(ext)s" if title
+                                  else "%(title).80B.%(ext)s")),
+        "http_headers": headers or {},
         "restrictfilenames": True,
         "noplaylist": True,
         "max_filesize": MAX_FILESIZE,
@@ -73,8 +83,23 @@ def run_job(job_id: str, url: str) -> None:
     out_dir = DOWNLOAD_DIR / job_id
     out_dir.mkdir()
     try:
-        with YoutubeDL(ydl_options(job_id, out_dir)) as ydl:
-            info = ydl.extract_info(url, download=True)
+        try:
+            with YoutubeDL(ydl_options(job_id, out_dir)) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception as first_error:
+            # yt-dlp could not handle the site: find the stream with a headless browser.
+            with jobs_lock:
+                jobs[job_id]["status"] = "searching page"
+            shutil.rmtree(out_dir)
+            out_dir.mkdir()
+            try:
+                found = sniff(url)
+            except Exception as sniff_error:
+                raise RuntimeError(f"{first_error} | Browser fallback: {sniff_error}") from None
+            headers = {"Referer": found.page_url, "User-Agent": found.user_agent}
+            with YoutubeDL(ydl_options(job_id, out_dir, headers, found.title or "video")) as ydl:
+                info = ydl.extract_info(found.media_url, download=True)
+            info["title"] = found.title or info.get("title")
         files = sorted(out_dir.glob("*.mp4"))
         if not files:
             raise RuntimeError("No MP4 was produced.")
