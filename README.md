@@ -33,6 +33,8 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 ## Settings (environment variables)
 | Variable | Default | Meaning |
 |---|---|---|
+| `VIDTOMP4_PORT` | `8000` | Port for `python app.py` (the systemd unit binds 8090) |
+| `VIDTOMP4_USER` / `VIDTOMP4_PASSWORD` | (unset) | Set both to require a login |
 | `VIDTOMP4_DIR` | `/tmp/vidtomp4` | Where files are stored |
 | `VIDTOMP4_MAX_AGE` | `3600` | Seconds before files are deleted |
 | `VIDTOMP4_MAX_BYTES` | `1073741824` | Largest download allowed, per video |
@@ -47,5 +49,5 @@ If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tri
 ## Notes
 - If a site has no stream at or below the chosen quality, the video is re-encoded down to it. "Best available" is never re-encoded.
 - In playlist mode, private or removed videos are skipped. A large playlist at high quality needs a lot of disk space, since files are kept until they expire.
-- The app has no authentication. Do not expose it publicly without adding a login (for example, nginx basic auth). Anyone who can reach it can use your server's bandwidth.
+- Set `VIDTOMP4_USER` and `VIDTOMP4_PASSWORD` before exposing the app publicly. Anyone who can reach it can use your server's bandwidth.
 - Only download content you have the right to download. Follow each site's terms of service.

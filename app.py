@@ -1,4 +1,5 @@
 """vidtomp4: web front end for yt-dlp that saves videos and playlists as MP4 files."""
+import hmac
 import os
 import re
 import shutil
@@ -9,7 +10,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, render_template, request, send_file
+from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 from yt_dlp import YoutubeDL
 
 from sniff import sniff
@@ -17,6 +18,9 @@ from sniff import sniff
 DOWNLOAD_DIR = Path(os.environ.get("VIDTOMP4_DIR", "/tmp/vidtomp4"))
 MAX_AGE_SECONDS = int(os.environ.get("VIDTOMP4_MAX_AGE", "3600"))
 MAX_FILESIZE = int(os.environ.get("VIDTOMP4_MAX_BYTES", str(1024**3)))  # 1 GiB, per video
+# Optional login. Set both to require a username and password (HTTP basic auth).
+AUTH_USER = os.environ.get("VIDTOMP4_USER")
+AUTH_PASSWORD = os.environ.get("VIDTOMP4_PASSWORD")
 MAX_PLAYLIST = int(os.environ.get("VIDTOMP4_MAX_PLAYLIST", "50"))
 # Allowed quality choices: maximum video height, or None for the best available.
 QUALITIES = {"144": 144, "240": 240, "360": 360, "480": 480, "720": 720,
@@ -24,6 +28,18 @@ QUALITIES = {"144": 144, "240": 240, "360": 360, "480": 480, "720": 720,
 
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__)
+
+
+@app.before_request
+def require_login():
+    if not (AUTH_USER and AUTH_PASSWORD):
+        return None
+    auth = request.authorization
+    if (auth and hmac.compare_digest(auth.username or "", AUTH_USER)
+            and hmac.compare_digest(auth.password or "", AUTH_PASSWORD)):
+        return None
+    return Response("Login required.", 401, {"WWW-Authenticate": 'Basic realm="vidtomp4"'})
+
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
@@ -208,4 +224,4 @@ def job_file(job_id):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=8000)
+    app.run(host="127.0.0.1", port=int(os.environ.get("VIDTOMP4_PORT", "8000")))
