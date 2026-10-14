@@ -37,7 +37,7 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 | `VIDTOMP4_PORT` | `8000` | Port for `python app.py` (the systemd unit binds 8090) |
 | `VIDTOMP4_USER` / `VIDTOMP4_PASSWORD` | (unset) | Set both to require a login |
 | `VIDTOMP4_DIR` | `/tmp/vidtomp4` | Where files are stored |
-| `VIDTOMP4_MAX_AGE` | `3600` | Seconds before files are deleted |
+| `VIDTOMP4_MAX_AGE` | `3600` | Seconds after a job finishes before its files are deleted (checked every 5 minutes; leftovers from before a restart are also removed) |
 | `VIDTOMP4_MAX_BYTES` | `1073741824` | Largest download allowed, per video |
 | `VIDTOMP4_MAX_PLAYLIST` | `50` | Most videos downloaded from one playlist |
 | `VIDTOMP4_BROWSERS` | `2` | Max headless browsers running at once |

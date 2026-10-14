@@ -162,19 +162,26 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
                     f.unlink()
         with jobs_lock:
             jobs[job_id].update(status="done", progress=100, file=str(final), mimetype=mimetype,
-                                title=info.get("title"), count=len(files))
+                                title=info.get("title"), count=len(files),
+                                finished=time.time())
     except Exception as exc:  # report any yt-dlp/ffmpeg failure to the user
         with jobs_lock:
-            jobs[job_id].update(status="error", error=str(exc))
+            jobs[job_id].update(status="error", error=str(exc), finished=time.time())
 
 
 def cleanup_loop() -> None:
     while True:
         cutoff = time.time() - MAX_AGE_SECONDS
         with jobs_lock:
-            for job_id in [j for j, v in jobs.items() if v["created"] < cutoff]:
-                shutil.rmtree(DOWNLOAD_DIR / job_id, ignore_errors=True)
-                del jobs[job_id]
+            # Expire finished jobs by when they finished, and never delete a running job.
+            for job_id, job in list(jobs.items()):
+                if job["status"] in ("done", "error") and job.get("finished", job["created"]) < cutoff:
+                    shutil.rmtree(DOWNLOAD_DIR / job_id, ignore_errors=True)
+                    del jobs[job_id]
+            # Remove leftovers from before a restart, which are no longer in `jobs`.
+            for path in DOWNLOAD_DIR.iterdir():
+                if path.name not in jobs and path.stat().st_mtime < cutoff:
+                    shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink()
         time.sleep(300)
 
 
