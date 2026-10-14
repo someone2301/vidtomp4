@@ -1,6 +1,6 @@
 # vidtomp4
 
-A small Flask web app built on [yt-dlp](https://github.com/yt-dlp/yt-dlp). Paste a video URL and it downloads the video, with audio, as a 360p MP4.
+A small Flask web app built on [yt-dlp](https://github.com/yt-dlp/yt-dlp). Paste a video URL and it downloads the video, with audio, as an MP4. Choose a quality from 144p to 1080p (default 360p) or "Best available". Tick "Whole playlist" to download every video in a playlist (for example a YouTube playlist) as a zip of MP4 files.
 
 ## Requirements
 - Python 3.10+
@@ -35,14 +35,17 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 |---|---|---|
 | `VIDTOMP4_DIR` | `/tmp/vidtomp4` | Where files are stored |
 | `VIDTOMP4_MAX_AGE` | `3600` | Seconds before files are deleted |
-| `VIDTOMP4_MAX_BYTES` | `1073741824` | Largest download allowed |
+| `VIDTOMP4_MAX_BYTES` | `1073741824` | Largest download allowed, per video |
+| `VIDTOMP4_MAX_PLAYLIST` | `50` | Most videos downloaded from one playlist |
 | `VIDTOMP4_BROWSERS` | `2` | Max headless browsers running at once |
 | `VIDTOMP4_SNIFF_SECONDS` | `20` | How long to watch a page for a video stream |
 | `VIDTOMP4_CHROMIUM` | (unset) | Path to a Chromium binary, if not using Playwright's |
 
 ## Browser fallback
-If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tries to start the player, and records network requests for HLS (`.m3u8`), DASH (`.mpd`) or MP4/WebM files. The first stream it finds is downloaded with the page as Referer, then converted to 360p MP4 as usual. It cannot handle DRM, streams with keys ffmpeg cannot get, or pages behind bot checks such as Cloudflare challenges. Each browser uses a few hundred MB of RAM.
+If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tries to start the player, and records network requests for HLS (`.m3u8`), DASH (`.mpd`) or MP4/WebM files. The first stream it finds is downloaded with the page as Referer, then converted to MP4 at the chosen quality as usual. The fallback is not used in playlist mode. It cannot handle DRM, streams with keys ffmpeg cannot get, or pages behind bot checks such as Cloudflare challenges. Each browser uses a few hundred MB of RAM.
 
 ## Notes
+- If a site has no stream at or below the chosen quality, the video is re-encoded down to it. "Best available" is never re-encoded.
+- In playlist mode, private or removed videos are skipped. A large playlist at high quality needs a lot of disk space, since files are kept until they expire.
 - The app has no authentication. Do not expose it publicly without adding a login (for example, nginx basic auth). Anyone who can reach it can use your server's bandwidth.
 - Only download content you have the right to download. Follow each site's terms of service.
