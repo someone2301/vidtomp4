@@ -16,7 +16,7 @@ from yt_dlp import YoutubeDL
 from sniff import sniff
 
 DOWNLOAD_DIR = Path(os.environ.get("VIDTOMP4_DIR", "/tmp/vidtomp4"))
-MAX_AGE_SECONDS = int(os.environ.get("VIDTOMP4_MAX_AGE", "3600"))
+MAX_AGE_SECONDS = int(os.environ.get("VIDTOMP4_MAX_AGE", "600"))
 MAX_FILESIZE = int(os.environ.get("VIDTOMP4_MAX_BYTES", str(1024**3)))  # 1 GiB, per video
 # Optional login. Set both to require a username and password (HTTP basic auth).
 AUTH_USER = os.environ.get("VIDTOMP4_USER")
@@ -182,7 +182,7 @@ def cleanup_loop() -> None:
             for path in DOWNLOAD_DIR.iterdir():
                 if path.name not in jobs and path.stat().st_mtime < cutoff:
                     shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink()
-        time.sleep(300)
+        time.sleep(60)
 
 
 threading.Thread(target=cleanup_loop, daemon=True).start()
