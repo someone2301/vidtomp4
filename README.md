@@ -33,6 +33,7 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 ## Settings (environment variables)
 | Variable | Default | Meaning |
 |---|---|---|
+| `VIDTOMP4_HOST` | `127.0.0.1` | Address for `python app.py` to listen on; `0.0.0.0` allows LAN/VPN access (the systemd unit binds 0.0.0.0) |
 | `VIDTOMP4_PORT` | `8000` | Port for `python app.py` (the systemd unit binds 8090) |
 | `VIDTOMP4_USER` / `VIDTOMP4_PASSWORD` | (unset) | Set both to require a login |
 | `VIDTOMP4_DIR` | `/tmp/vidtomp4` | Where files are stored |

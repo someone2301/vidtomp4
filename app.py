@@ -224,4 +224,4 @@ def job_file(job_id):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("VIDTOMP4_PORT", "8000")))
+    app.run(host=os.environ.get("VIDTOMP4_HOST", "127.0.0.1"), port=int(os.environ.get("VIDTOMP4_PORT", "8000")))
