@@ -9,7 +9,7 @@
   form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
   select { padding: .6rem; font-size: 1rem; }
   label { display: flex; gap: .3rem; align-items: center; }
-  input[type=url] { flex: 1 1 100%; padding: .6rem; font-size: 1rem; }
+  input[type=url], input[type=search] { flex: 1 1 100%; padding: .6rem; font-size: 1rem; }
   button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
   progress { width: 100%; margin-top: 1rem; }
   #status { margin-top: 1rem; white-space: pre-wrap; }
@@ -17,7 +17,7 @@
 </head>
 <body>
 <h1>vidtomp4</h1>
-<p>Paste a video or playlist URL. Videos are saved as MP4 with audio. Playlists download as a zip.</p>
+<p>Paste a video, playlist or YouTube channel URL. Videos are saved as MP4 with audio. Playlists, channels and searches download as a zip. To get only matching videos from a channel, paste the channel URL and type a search.</p>
 <form id="f">
   <input id="url" type="url" placeholder="https://..." required>
   <select id="quality" aria-label="Quality">
@@ -29,6 +29,7 @@
     <option value="1080">1080p</option>
     <option value="best">Best available</option>
   </select>
+  <input id="search" type="search" placeholder="Search this channel (optional)" aria-label="Search this channel">
   <label><input id="playlist" type="checkbox"> Whole playlist</label>
   <button id="go">Convert</button>
   <button id="cancel" type="button" hidden>Cancel</button>
@@ -50,7 +51,8 @@ $("f").onsubmit = async e => {
   $("status").textContent = "Queued...";
   const r = await fetch("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"},
                                      body: JSON.stringify({url: $("url").value, quality: $("quality").value,
-                                                           playlist: $("playlist").checked})});
+                                                           playlist: $("playlist").checked,
+                                                           search: $("search").value})});
   const j = await r.json();
   if (!r.ok) { $("status").textContent = j.error; $("go").disabled = false; return; }
   jobId = j.id; $("cancel").hidden = false; $("cancel").disabled = false;

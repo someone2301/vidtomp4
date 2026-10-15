@@ -8,10 +8,12 @@ import threading
 import time
 import uuid
 import zipfile
+from urllib.parse import quote
 from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 from yt_dlp import YoutubeDL
+from yt_dlp.extractor import get_info_extractor
 
 from sniff import sniff
 
@@ -47,6 +49,25 @@ def require_login():
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+
+
+CHANNEL_URL = re.compile(
+    r"^(https?://(?:www\.|m\.)?youtube\.com/(?:@[^/?#]+|channel/[^/?#]+|c/[^/?#]+|user/[^/?#]+))")
+# yt-dlp extractors whose URLs are always lists of videos: channel pages and
+# tabs (including channel search), search results pages and playlists.
+LIST_EXTRACTORS = [get_info_extractor(k) for k in ("YoutubeTab", "YoutubeSearchURL", "YoutubePlaylist")]
+
+
+def is_list_url(url: str) -> bool:
+    if re.search(r"youtube\.com/(watch|shorts/)|youtu\.be/", url):
+        return False  # a single video, even if it has &list=
+    return any(ie.suitable(url) for ie in LIST_EXTRACTORS)
+
+
+def channel_search_url(url: str, query: str) -> str | None:
+    """Build https://www.youtube.com/@name/search?query=... from any channel URL."""
+    m = CHANNEL_URL.match(url)
+    return f"{m.group(1)}/search?query={quote(query)}" if m else None
 
 
 def safe_name(text: str) -> str:
@@ -278,6 +299,14 @@ def create_job():
     if quality not in QUALITIES:
         return jsonify(error="Unknown quality."), 400
     playlist = bool(data.get("playlist"))
+    search = str(data.get("search", "")).strip()
+    if search:
+        url = channel_search_url(url, search)
+        if not url:
+            return jsonify(error="Searching only works with a YouTube channel URL, "
+                                 "such as https://www.youtube.com/@name."), 400
+    # Channel pages, channel searches and search results are lists of videos.
+    playlist = playlist or is_list_url(url)
     job_id = uuid.uuid4().hex
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "progress": 0, "created": time.time()}

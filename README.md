@@ -50,6 +50,11 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 ## Browser fallback
 If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tries to start the player, and records network requests for HLS (`.m3u8`), DASH (`.mpd`) or MP4/WebM files. The first stream it finds is downloaded with the page as Referer, then converted to MP4 at the chosen quality as usual. The fallback is not used in playlist mode. It cannot handle DRM, streams with keys ffmpeg cannot get, or pages behind bot checks such as Cloudflare challenges. Each browser uses a few hundred MB of RAM.
 
+## Channels and searches
+- A YouTube channel URL (`https://www.youtube.com/@name`, or a tab like `/videos`), a channel search URL (`/@name/search?query=...`), a search results URL (`/results?search_query=...`) or a playlist URL is downloaded as a playlist automatically, even if "Whole playlist" is not ticked.
+- To download only matching videos from a channel, paste the channel URL and type words in "Search this channel". The app builds the channel's search URL for you.
+- `VIDTOMP4_MAX_PLAYLIST` (default 50) also limits how many videos a channel or search downloads.
+
 ## Notes
 - The Cancel button stops a job at any stage (downloading, browser search or re-encoding) and deletes its files right away.
 - If a site has no stream at or below the chosen quality, the video is re-encoded down to it. "Best available" is never re-encoded.
