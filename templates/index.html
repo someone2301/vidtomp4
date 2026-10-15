@@ -31,6 +31,10 @@
 <p>Paste a video, playlist or YouTube channel URL. Videos are saved as MP4 with audio. Playlists, channels and searches download as a zip. To get only matching videos from a channel, paste the channel URL and type a search.</p>
 <form id="f">
   <input id="url" type="url" placeholder="https://..." required>
+  <select id="mode" aria-label="Output">
+    <option value="video" selected>MP4 video</option>
+    <option value="stems" {% if not stems %}disabled{% endif %}>Drum stems (WAV){% if not stems %} - not installed{% endif %}</option>
+  </select>
   <select id="quality" aria-label="Quality">
     <option value="144">144p</option>
     <option value="240">240p</option>
@@ -64,7 +68,10 @@ const $ = id => document.getElementById(id);
 const mine = new Set();
 const opened = new Set();
 const ACTIVE = new Set(["queued", "downloading", "processing", "searching page",
-                        "searching channel", "cancelling"]);
+                        "searching channel", "cancelling", "waiting for separator",
+                        "separating instruments (1/2)", "splitting drums (2/2)"]);
+// Quality only applies to video.
+$("mode").onchange = () => { $("quality").disabled = $("mode").value === "stems"; };
 
 function fmtBytes(n) {
   if (!n) return "0 B";
@@ -99,6 +106,10 @@ function describe(j) {
     parts.push(fmtBytes(j.size));
   } else if (j.status === "processing") {
     parts.push("converting, time unknown");
+  } else if (j.sep_eta != null) {
+    parts.push(j.sep_eta > 0 ? "about " + fmtTime(j.sep_eta) + " left (this song)" : "almost done");
+  } else if (j.status === "waiting for separator") {
+    parts.push("another separation is running; this one starts after it");
   }
   if (j.items > 1) {
     const whole = [];
@@ -117,7 +128,8 @@ function render(list) {
     const card = el("div", "job");
     const top = el("div", "top");
     top.append(el("span", "name", j.title || (j.search ? `Search: ${j.search}` : "Untitled")),
-               el("span", "meta", `${j.status} · ${j.quality === "best" ? "best" : j.quality + "p"}`));
+               el("span", "meta", `${j.status} · ${j.mode === "stems" ? "drum stems"
+                                    : j.quality === "best" ? "best" : j.quality + "p"}`));
     card.append(top, el("div", "url", j.url + (j.items > 1 || j.search ? ` · max ${j.limit || "unlimited"} videos` : "")));
     if (ACTIVE.has(j.status)) {
       const bar = el("progress");
@@ -135,7 +147,8 @@ function render(list) {
       actions.append(b);
     }
     if (j.status === "done") {
-      const a = el("a", null, j.count > 1 ? `Download zip (${j.count} videos)` : "Download MP4");
+      const a = el("a", null, j.mode === "stems" ? `Download stems zip${j.count > 1 ? ` (${j.count} songs)` : ""}`
+                              : j.count > 1 ? `Download zip (${j.count} videos)` : "Download MP4");
       a.href = `/api/jobs/${j.id}/file`;
       actions.append(a);
       if (mine.has(j.id) && !opened.has(j.id)) { opened.add(j.id); a.click(); }
@@ -167,7 +180,8 @@ $("f").onsubmit = async e => {
                                        body: JSON.stringify({url: $("url").value, quality: $("quality").value,
                                                              playlist: $("playlist").checked,
                                                              search: $("search").value,
-                                                             limit: Number($("limit").value || 0)})});
+                                                             limit: Number($("limit").value || 0),
+                                                             mode: $("mode").value})});
     const j = await r.json();
     if (!r.ok) { $("status").textContent = j.error; return; }
     mine.add(j.id);

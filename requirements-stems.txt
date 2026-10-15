@@ -1,0 +1,4 @@
+# Optional: drum stem separation (kick, snare, hi-hat, ...). Large download (PyTorch).
+-r requirements.txt
+audio-separator[cpu]>=0.47
+audioread
