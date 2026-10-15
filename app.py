@@ -48,6 +48,29 @@ def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_.")[:80] or "video"
 
 
+class JobLogger:
+    """Collects yt-dlp's messages so a failed job can say why it failed."""
+
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+
+    def _add(self, msg: str) -> None:
+        if msg.startswith("[download]") and "%" in msg:
+            return  # progress lines
+        with jobs_lock:
+            log = jobs[self.job_id].setdefault("log", [])
+            log.append(msg)
+            del log[:-20]
+
+    debug = info = _add
+
+    def warning(self, msg: str) -> None:
+        self._add(msg)
+
+    def error(self, msg: str) -> None:
+        self._add(msg)
+
+
 def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool = False,
                 headers: dict | None = None, title: str | None = None) -> dict:
     def hook(d):
@@ -92,6 +115,7 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
         "ignoreerrors": playlist,
         "max_filesize": MAX_FILESIZE,
         "progress_hooks": [hook],
+        "logger": JobLogger(job_id),
         "quiet": True,
         "noprogress": True,
         "no_warnings": True,
@@ -147,7 +171,17 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
             info["title"] = found.title or info.get("title")
         files = sorted(out_dir.glob("*.mp4"))
         if not files:
-            raise RuntimeError("No MP4 was produced.")
+            with jobs_lock:
+                log = jobs[job_id].get("log", [])
+            reasons = [m for m in log if any(k in m.lower() for k in
+                       ("error", "warning", "larger than", "max-filesize", "skipping", "not available"))]
+            if any("larger than" in m or "max-filesize" in m for m in log):
+                hint = (f"The video is larger than the {MAX_FILESIZE // 1024**2} MB limit. "
+                        "Choose a lower quality or raise VIDTOMP4_MAX_BYTES.")
+            else:
+                hint = "yt-dlp finished without producing a file."
+            detail = " | ".join(reasons[-3:] or log[-3:])
+            raise RuntimeError(f"No MP4 was produced. {hint}" + (f" Details: {detail}" if detail else ""))
         with jobs_lock:
             jobs[job_id]["status"] = "processing"
         files = [ensure_height(f, height) for f in files]
