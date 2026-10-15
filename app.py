@@ -36,6 +36,9 @@ QUALITIES = {"144": 144, "240": 240, "360": 360, "480": 480, "720": 720,
              "1080": 1080, "best": None}
 
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+if not any(shutil.which(js) for js in ("deno", "node", "bun", "quickjs", "qjs")):
+    print("vidtomp4: warning: no JavaScript runtime (such as Deno) found on PATH; "
+          "YouTube downloads may fail with HTTP 403.", flush=True)
 app = Flask(__name__)
 
 
@@ -352,6 +355,10 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool,
             if any("larger than" in m or "max-filesize" in m for m in log):
                 hint = (f"The video is larger than the {MAX_FILESIZE / 1024**2:g} MB limit. "
                         "Choose a lower quality or raise VIDTOMP4_MAX_BYTES.")
+            elif any("403" in m for m in log):
+                hint = ("The site refused the download (HTTP 403). For YouTube this usually means "
+                        "yt-dlp needs updating or a JavaScript runtime such as Deno is missing; "
+                        "see the README's YouTube section.")
             else:
                 hint = "yt-dlp finished without producing a file."
             detail = " | ".join(reasons[-3:] or log[-3:])

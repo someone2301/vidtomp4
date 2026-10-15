@@ -57,6 +57,12 @@ If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tri
 - The "Max videos" box on the page sets how many videos a playlist, channel or search downloads (`0` = no limit). Its starting value comes from `VIDTOMP4_MAX_PLAYLIST` (default 50).
 - yt-dlp needs a JavaScript runtime such as Deno for full YouTube support. Install it somewhere on the service's PATH, such as `/usr/local/bin`.
 
+## YouTube "HTTP Error 403: Forbidden"
+YouTube changes often. If downloads fail with 403:
+1. Update yt-dlp: `~/vidtomp4/venv/bin/pip install -U "yt-dlp[default]"` (or the pre-release: add `--pre`), then restart the service.
+2. Install a JavaScript runtime such as Deno where the service can find it, for example `/usr/local/bin`. The app prints a warning at startup (see `journalctl -u vidtomp4`) when none is found.
+3. Try `VIDTOMP4_COOKIES` with fresh cookies, or remove old cookies if you already use them.
+
 ## Notes
 - The Jobs section lists every job on the server (from any browser or device), refreshed every second, with download size, speed and estimated time left. Each running job has its own Cancel button. Playlists also show a rough total size and time left for the whole playlist, based on the average time per video so far. Finished jobs have a Remove button, and the list has "Clear cancelled & failed" and "Clear all finished" buttons; removing a job deletes its files.
 - The Cancel button stops a job at any stage (downloading, browser search or re-encoding) and deletes its files right away.
