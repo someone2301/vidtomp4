@@ -38,7 +38,8 @@ def _kind(url: str, content_type: str) -> str | None:
     return None
 
 
-def sniff(page_url: str) -> SniffResult:
+def sniff(page_url: str, check_cancelled=lambda: None) -> SniffResult:
+    """check_cancelled is called while waiting and should raise to stop."""
     with _slots, sync_playwright() as p:
         kwargs = {"headless": True, "args": ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"]}
         if CHROMIUM_PATH:
@@ -56,6 +57,7 @@ def sniff(page_url: str) -> SniffResult:
                     found.append((PRIORITY[kind], len(found), resp.url))
 
             page.on("response", on_response)
+            check_cancelled()
             page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
             # Try to start playback in the page and in any iframes.
             for frame in page.frames:
@@ -64,13 +66,15 @@ def sniff(page_url: str) -> SniffResult:
                 except Exception:
                     pass
             for selector in ("video", "[class*=play]", "button[aria-label*=Play i]"):
+                check_cancelled()
                 try:
-                    page.locator(selector).first.click(timeout=2000)
+                    page.locator(selector).first.click(timeout=1000)
                     break
                 except Exception:
                     pass
             waited = 0
             while waited < SNIFF_SECONDS * 1000 and not any(f[0] == 0 for f in found):
+                check_cancelled()
                 page.wait_for_timeout(500)
                 waited += 500
             if not found:

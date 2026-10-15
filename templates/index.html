@@ -31,11 +31,19 @@
   </select>
   <label><input id="playlist" type="checkbox"> Whole playlist</label>
   <button id="go">Convert</button>
+  <button id="cancel" type="button" hidden>Cancel</button>
 </form>
 <progress id="bar" max="100" value="0" hidden></progress>
 <div id="status"></div>
 <script>
 const $ = id => document.getElementById(id);
+let jobId = null;
+$("cancel").onclick = async () => {
+  if (!jobId) return;
+  $("cancel").disabled = true;
+  await fetch(`/api/jobs/${jobId}/cancel`, {method: "POST"});
+};
+const finish = () => { $("go").disabled = false; $("cancel").hidden = true; jobId = null; };
 $("f").onsubmit = async e => {
   e.preventDefault();
   $("go").disabled = true; $("bar").hidden = false; $("bar").value = 0;
@@ -45,21 +53,26 @@ $("f").onsubmit = async e => {
                                                            playlist: $("playlist").checked})});
   const j = await r.json();
   if (!r.ok) { $("status").textContent = j.error; $("go").disabled = false; return; }
+  jobId = j.id; $("cancel").hidden = false; $("cancel").disabled = false;
   const poll = setInterval(async () => {
     const s = await (await fetch(`/api/jobs/${j.id}`)).json();
     $("bar").value = s.progress || 0;
     $("status").textContent = s.status + (s.items ? ` (video ${s.item} of ${s.items})` : "")
                               + (s.title ? ": " + s.title : "");
     if (s.status === "done") {
-      clearInterval(poll); $("go").disabled = false;
+      clearInterval(poll); finish();
       $("status").innerHTML = "";
       const a = document.createElement("a");
       a.href = `/api/jobs/${j.id}/file`; a.textContent = s.count > 1 ? `Download ${s.title || "playlist"} (${s.count} videos, zip)`
                                   : "Download " + (s.title || "video") + ".mp4";
       $("status").appendChild(a); a.click();
     } else if (s.status === "error") {
-      clearInterval(poll); $("go").disabled = false;
+      clearInterval(poll); finish();
       $("status").textContent = "Error: " + s.error;
+    } else if (s.status === "cancelled") {
+      clearInterval(poll); finish();
+      $("bar").hidden = true;
+      $("status").textContent = "Cancelled.";
     }
   }, 1000);
 };

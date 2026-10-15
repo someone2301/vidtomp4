@@ -53,6 +53,17 @@ def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_.")[:80] or "video"
 
 
+class JobCancelled(BaseException):
+    """Raised inside a job to stop it. A BaseException, so yt-dlp's
+    ignoreerrors (used for playlists) does not swallow it."""
+
+
+def check_cancelled(job_id: str) -> None:
+    with jobs_lock:
+        if jobs[job_id].get("cancel"):
+            raise JobCancelled()
+
+
 class JobLogger:
     """Collects yt-dlp's messages so a failed job can say why it failed."""
 
@@ -79,6 +90,7 @@ class JobLogger:
 def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool = False,
                 headers: dict | None = None, title: str | None = None) -> dict:
     def hook(d):
+        check_cancelled(job_id)
         with jobs_lock:
             job = jobs[job_id]
             info = d.get("info_dict") or {}
@@ -138,7 +150,7 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
     }
 
 
-def ensure_height(path: Path, max_height: int | None) -> Path:
+def ensure_height(path: Path, max_height: int | None, job_id: str) -> Path:
     """Re-encode to max_height H.264/AAC if the site offered no stream at or below it."""
     if not max_height:
         return path
@@ -150,11 +162,20 @@ def ensure_height(path: Path, max_height: int | None) -> Path:
     if height <= max_height:
         return path
     out = path.with_name(f"{path.stem}.{max_height}p.mp4")
-    subprocess.run(
+    proc = subprocess.Popen(
         ["ffmpeg", "-loglevel", "error", "-y", "-i", str(path), "-vf", f"scale=-2:{max_height}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out)],
-        check=True)
+         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out)])
+    while proc.poll() is None:
+        try:
+            check_cancelled(job_id)
+        except JobCancelled:
+            proc.kill()
+            proc.wait()
+            raise
+        time.sleep(0.5)
+    if proc.returncode:
+        raise RuntimeError(f"ffmpeg failed to re-encode (exit code {proc.returncode}).")
     path.unlink()
     return out
 
@@ -177,7 +198,7 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
             shutil.rmtree(out_dir)
             out_dir.mkdir()
             try:
-                found = sniff(url)
+                found = sniff(url, lambda: check_cancelled(job_id))
             except Exception as sniff_error:
                 raise RuntimeError(f"{first_error} | Browser fallback: {sniff_error}") from None
             headers = {"Referer": found.page_url, "User-Agent": found.user_agent}
@@ -200,7 +221,7 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
             raise RuntimeError(f"No MP4 was produced. {hint}" + (f" Details: {detail}" if detail else ""))
         with jobs_lock:
             jobs[job_id]["status"] = "processing"
-        files = [ensure_height(f, height) for f in files]
+        files = [ensure_height(f, height, job_id) for f in files]
         if len(files) == 1:
             final, mimetype = files[0], "video/mp4"
         else:
@@ -214,6 +235,10 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
             jobs[job_id].update(status="done", progress=100, file=str(final), mimetype=mimetype,
                                 title=info.get("title"), count=len(files),
                                 finished=time.time())
+    except JobCancelled:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        with jobs_lock:
+            jobs[job_id].update(status="cancelled", finished=time.time())
     except Exception as exc:  # report any yt-dlp/ffmpeg failure to the user
         with jobs_lock:
             jobs[job_id].update(status="error", error=str(exc), finished=time.time())
@@ -225,7 +250,7 @@ def cleanup_loop() -> None:
         with jobs_lock:
             # Expire finished jobs by when they finished, and never delete a running job.
             for job_id, job in list(jobs.items()):
-                if job["status"] in ("done", "error") and job.get("finished", job["created"]) < cutoff:
+                if job["status"] in ("done", "error", "cancelled") and job.get("finished", job["created"]) < cutoff:
                     shutil.rmtree(DOWNLOAD_DIR / job_id, ignore_errors=True)
                     del jobs[job_id]
             # Remove leftovers from before a restart, which are no longer in `jobs`.
@@ -268,6 +293,18 @@ def job_status(job_id):
             abort(404)
         return jsonify({k: job.get(k) for k in ("status", "progress", "error", "title",
                                          "item", "items", "count")})
+
+
+@app.post("/api/jobs/<job_id>/cancel")
+def cancel_job(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            abort(404)
+        if job["status"] not in ("done", "error", "cancelled"):
+            job["cancel"] = True
+            job["status"] = "cancelling"
+        return jsonify(status=job["status"])
 
 
 @app.get("/api/jobs/<job_id>/file")

@@ -51,6 +51,7 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tries to start the player, and records network requests for HLS (`.m3u8`), DASH (`.mpd`) or MP4/WebM files. The first stream it finds is downloaded with the page as Referer, then converted to MP4 at the chosen quality as usual. The fallback is not used in playlist mode. It cannot handle DRM, streams with keys ffmpeg cannot get, or pages behind bot checks such as Cloudflare challenges. Each browser uses a few hundred MB of RAM.
 
 ## Notes
+- The Cancel button stops a job at any stage (downloading, browser search or re-encoding) and deletes its files right away.
 - If a site has no stream at or below the chosen quality, the video is re-encoded down to it. "Best available" is never re-encoded.
 - In playlist mode, private or removed videos are skipped. A large playlist at high quality needs a lot of disk space, since files are kept until they expire.
 - Set `VIDTOMP4_USER` and `VIDTOMP4_PASSWORD` before exposing the app publicly. Anyone who can reach it can use your server's bandwidth.
