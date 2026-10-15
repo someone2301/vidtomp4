@@ -9,6 +9,7 @@
   form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
   select { padding: .6rem; font-size: 1rem; }
   label { display: flex; gap: .3rem; align-items: center; }
+  #limit { width: 5rem; padding: .5rem; font-size: 1rem; }
   input[type=url], input[type=search] { flex: 1 1 100%; padding: .6rem; font-size: 1rem; }
   button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
   progress { width: 100%; margin-top: 1rem; }
@@ -41,6 +42,8 @@
   </select>
   <input id="search" type="search" placeholder="Search this channel (optional)" aria-label="Search this channel">
   <label><input id="playlist" type="checkbox"> Whole playlist</label>
+  <label>Max videos <input id="limit" type="number" min="0" step="1" value="{{ max_playlist }}"
+         title="Most videos to download from a playlist, channel or search. 0 = no limit."></label>
   <button id="go">Convert</button>
 </form>
 <div id="status"></div>
@@ -97,7 +100,12 @@ function describe(j) {
   } else if (j.status === "processing") {
     parts.push("converting, time unknown");
   }
-  if (j.items > 1 && j.playlist_eta != null) parts.push("about " + fmtTime(j.playlist_eta) + " left (whole playlist)");
+  if (j.items > 1) {
+    const whole = [];
+    if (j.playlist_size) whole.push("about " + fmtBytes(j.playlist_size) + " total");
+    if (j.playlist_eta != null) whole.push("about " + fmtTime(j.playlist_eta) + " left");
+    if (whole.length) parts.push("Whole playlist: " + whole.join(", "));
+  }
   return parts.join(" · ");
 }
 
@@ -110,7 +118,7 @@ function render(list) {
     const top = el("div", "top");
     top.append(el("span", "name", j.title || (j.search ? `Search: ${j.search}` : "Untitled")),
                el("span", "meta", `${j.status} · ${j.quality === "best" ? "best" : j.quality + "p"}`));
-    card.append(top, el("div", "url", j.url));
+    card.append(top, el("div", "url", j.url + (j.items > 1 || j.search ? ` · max ${j.limit || "unlimited"} videos` : "")));
     if (ACTIVE.has(j.status)) {
       const bar = el("progress");
       bar.max = 100;
@@ -158,7 +166,8 @@ $("f").onsubmit = async e => {
     const r = await fetch("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"},
                                        body: JSON.stringify({url: $("url").value, quality: $("quality").value,
                                                              playlist: $("playlist").checked,
-                                                             search: $("search").value})});
+                                                             search: $("search").value,
+                                                             limit: Number($("limit").value || 0)})});
     const j = await r.json();
     if (!r.ok) { $("status").textContent = j.error; return; }
     mine.add(j.id);

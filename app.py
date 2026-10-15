@@ -96,6 +96,7 @@ def set_item(job: dict, index: int, count: int | None) -> None:
             job["items_time"] = job.get("items_time", 0) + now - job["item_started"]
             job["items_timed"] = job.get("items_timed", 0) + 1
         job["item"], job["item_started"] = index, now
+        job["item_bytes_start"] = job.get("finished_bytes", 0)
     job["items"] = count
 
 
@@ -116,6 +117,23 @@ def playlist_eta(job: dict) -> float | None:
     else:
         return None
     return current_left + max(items - item, 0) * per_video
+
+
+def playlist_size(job: dict) -> float | None:
+    """Rough total download size of the whole playlist: what earlier videos used,
+    plus this video, plus the remaining videos at the average size so far."""
+    items, item = job.get("items"), job.get("item")
+    if not (items and item) or job["status"] in ("done", "error", "cancelled"):
+        return None
+    before = job.get("item_bytes_start", 0)
+    current = job.get("finished_bytes", 0) - before + (job.get("total") or 0)
+    timed = job.get("items_timed", 0)
+    average = before / timed if timed else current
+    if not average:
+        return None
+    # Video and audio arrive separately, so early in a video `current` can be low.
+    current = max(current, average)
+    return before + current + max(items - item, 0) * average
 
 
 class JobLogger:
@@ -143,6 +161,8 @@ class JobLogger:
 
 def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool = False,
                 headers: dict | None = None, title: str | None = None) -> dict:
+    with jobs_lock:
+        limit = jobs[job_id].get("limit", MAX_PLAYLIST)
     def hook(d):
         check_cancelled(job_id)
         with jobs_lock:
@@ -163,7 +183,8 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
                 # Video and audio are separate downloads; keep a running total of both.
                 job["finished_bytes"] = job.get("finished_bytes", 0) + (
                     d.get("total_bytes") or d.get("downloaded_bytes") or 0)
-                job.update(status="processing", speed=None, eta=None)
+                # Clear the per-file numbers so the finished file is not counted twice.
+                job.update(status="processing", speed=None, eta=None, total=None, downloaded=None)
 
     if height:
         # Best video at or below the chosen height plus best audio, or a pre-merged file.
@@ -187,7 +208,7 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
         "http_headers": headers or {},
         "restrictfilenames": True,
         "noplaylist": not playlist,
-        "playlist_items": f"1:{MAX_PLAYLIST}" if MAX_PLAYLIST else None,
+        "playlist_items": f"1:{limit}" if limit else None,
         # In a playlist, skip private/removed videos instead of failing the whole job.
         "ignoreerrors": playlist,
         "max_filesize": MAX_FILESIZE or None,
@@ -246,7 +267,8 @@ def search_channel_by_title(job_id: str, out_dir: Path, height: int | None,
     ones whose title contains every word of the query."""
     with jobs_lock:
         jobs[job_id].update(status="searching channel", item=None, items=None, item_started=None,
-                            items_time=0, items_timed=0, finished_bytes=0, downloaded=None,
+                            items_time=0, items_timed=0, finished_bytes=0, item_bytes_start=0,
+                            downloaded=None,
                             total=None, eta=None, speed=None)
     words = query.lower().split()
     list_opts = {"extract_flat": "in_playlist", "quiet": True, "no_warnings": True,
@@ -257,8 +279,10 @@ def search_channel_by_title(job_id: str, out_dir: Path, height: int | None,
     check_cancelled(job_id)
     matches = [e for e in listing.get("entries") or []
                if e and all(w in (e.get("title") or "").lower() for w in words)]
-    if MAX_PLAYLIST:
-        matches = matches[:MAX_PLAYLIST]
+    with jobs_lock:
+        limit = jobs[job_id].get("limit", MAX_PLAYLIST)
+    if limit:
+        matches = matches[:limit]
     if not matches:
         raise RuntimeError(f"No videos on this channel have \"{query}\" in the title "
                            f"(checked the newest {CHANNEL_SCAN_LIMIT} uploads).")
@@ -379,7 +403,7 @@ threading.Thread(target=cleanup_loop, daemon=True).start()
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", max_playlist=MAX_PLAYLIST)
 
 
 @app.post("/api/jobs")
@@ -392,6 +416,12 @@ def create_job():
     if quality not in QUALITIES:
         return jsonify(error="Unknown quality."), 400
     playlist = bool(data.get("playlist"))
+    try:
+        limit = int(data.get("limit", MAX_PLAYLIST))
+    except (TypeError, ValueError):
+        return jsonify(error="Max videos must be a whole number."), 400
+    if limit < 0:
+        return jsonify(error="Max videos cannot be negative."), 400
     search = str(data.get("search", "")).strip()
     channel = None
     if search:
@@ -406,7 +436,7 @@ def create_job():
     job_id = uuid.uuid4().hex
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "progress": 0, "created": time.time(),
-                        "url": url, "quality": quality, "search": search or None}
+                        "url": url, "quality": quality, "search": search or None, "limit": limit}
     threading.Thread(target=run_job, args=(job_id, url, QUALITIES[quality], playlist,
                                                    channel, search or None), daemon=True).start()
     return jsonify(id=job_id), 202
@@ -414,12 +444,12 @@ def create_job():
 
 PUBLIC_FIELDS = ("status", "progress", "error", "title", "item", "items", "count", "url",
                  "quality", "search", "created", "downloaded", "total", "finished_bytes",
-                 "speed", "eta", "size")
+                 "speed", "eta", "size", "limit")
 
 
 def public(job_id: str, job: dict) -> dict:
     return {"id": job_id, **{k: job.get(k) for k in PUBLIC_FIELDS},
-            "playlist_eta": playlist_eta(job)}
+            "playlist_eta": playlist_eta(job), "playlist_size": playlist_size(job)}
 
 
 FINISHED = ("done", "error", "cancelled")
