@@ -53,10 +53,12 @@ If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tri
 ## Channels and searches
 - A YouTube channel URL (`https://www.youtube.com/@name`, or a tab like `/videos`), a channel search URL (`/@name/search?query=...`), a search results URL (`/results?search_query=...`) or a playlist URL is downloaded as a playlist automatically, even if "Whole playlist" is not ticked.
 - To download only matching videos from a channel, paste the channel URL and type words in "Search this channel". The app builds the channel's search URL for you.
+- If YouTube's channel search fails or finds nothing, the app falls back to listing the channel's newest uploads (up to `VIDTOMP4_CHANNEL_SCAN`, default 1000) and downloading the ones whose title contains every search word.
 - `VIDTOMP4_MAX_PLAYLIST` (default 50) also limits how many videos a channel or search downloads.
+- yt-dlp needs a JavaScript runtime such as Deno for full YouTube support. Install it somewhere on the service's PATH, such as `/usr/local/bin`.
 
 ## Notes
-- The Jobs section lists every job on the server (from any browser or device), refreshed every second, with download size, speed and estimated time left. Each running job has its own Cancel button.
+- The Jobs section lists every job on the server (from any browser or device), refreshed every second, with download size, speed and estimated time left. Each running job has its own Cancel button. Playlists also show a rough time left for the whole playlist, based on the average time per video so far. Finished jobs have a Remove button, and the list has "Clear cancelled & failed" and "Clear all finished" buttons; removing a job deletes its files.
 - The Cancel button stops a job at any stage (downloading, browser search or re-encoding) and deletes its files right away.
 - If a site has no stream at or below the chosen quality, the video is re-encoded down to it. "Best available" is never re-encoded.
 - In playlist mode, private or removed videos are skipped. A large playlist at high quality needs a lot of disk space, since files are kept until they expire.

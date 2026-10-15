@@ -14,6 +14,9 @@
   progress { width: 100%; margin-top: 1rem; }
   #status { margin-top: 1rem; white-space: pre-wrap; }
   #jobs { margin-top: 2rem; }
+  .jobs-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .5rem; }
+  .jobs-head button, .job button { padding: .35rem .7rem; font-size: .9rem; }
+  .job .actions { margin-top: .5rem; display: flex; gap: .75rem; align-items: center; }
   .job { border: 1px solid #ccc; border-radius: 6px; padding: .75rem; margin-bottom: .75rem; }
   .job .top { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
   .job .name { font-weight: 600; overflow-wrap: anywhere; }
@@ -42,7 +45,13 @@
 </form>
 <div id="status"></div>
 <section id="jobs">
-  <h2>Jobs</h2>
+  <div class="jobs-head">
+    <h2>Jobs</h2>
+    <span>
+      <button id="clear-cancelled" type="button">Clear cancelled &amp; failed</button>
+      <button id="clear-all" type="button">Clear all finished</button>
+    </span>
+  </div>
   <p id="empty">No jobs yet.</p>
   <div id="list"></div>
 </section>
@@ -51,7 +60,8 @@ const $ = id => document.getElementById(id);
 // Jobs started from this browser tab; their file downloads automatically when ready.
 const mine = new Set();
 const opened = new Set();
-const ACTIVE = new Set(["queued", "downloading", "processing", "searching page", "cancelling"]);
+const ACTIVE = new Set(["queued", "downloading", "processing", "searching page",
+                        "searching channel", "cancelling"]);
 
 function fmtBytes(n) {
   if (!n) return "0 B";
@@ -87,6 +97,7 @@ function describe(j) {
   } else if (j.status === "processing") {
     parts.push("converting, time unknown");
   }
+  if (j.items > 1 && j.playlist_eta != null) parts.push("about " + fmtTime(j.playlist_eta) + " left (whole playlist)");
   return parts.join(" · ");
 }
 
@@ -109,7 +120,7 @@ function render(list) {
     const info = describe(j);
     if (info) card.append(el("div", "meta", info));
     if (j.status === "error") card.append(el("div", "err", j.error));
-    const actions = el("div");
+    const actions = el("div", "actions");
     if (ACTIVE.has(j.status) && j.status !== "cancelling") {
       const b = el("button", null, "Cancel");
       b.onclick = async () => { b.disabled = true; await fetch(`/api/jobs/${j.id}/cancel`, {method: "POST"}); refresh(); };
@@ -121,7 +132,13 @@ function render(list) {
       actions.append(a);
       if (mine.has(j.id) && !opened.has(j.id)) { opened.add(j.id); a.click(); }
     }
-    if (actions.childElementCount) { actions.style.marginTop = ".5rem"; card.append(actions); }
+    if (!ACTIVE.has(j.status)) {
+      const b = el("button", null, j.status === "done" ? "Remove" : "Clear");
+      b.title = "Remove from the list and delete its files from the server";
+      b.onclick = async () => { b.disabled = true; await fetch(`/api/jobs/${j.id}`, {method: "DELETE"}); refresh(); };
+      actions.append(b);
+    }
+    if (actions.childElementCount) card.append(actions);
     box.append(card);
   }
 }
@@ -151,6 +168,13 @@ $("f").onsubmit = async e => {
   } finally {
     $("go").disabled = false;
   }
+};
+
+$("clear-cancelled").onclick = async () => { await fetch("/api/jobs/clear", {method: "POST"}); refresh(); };
+$("clear-all").onclick = async () => {
+  if (!confirm("Remove all finished jobs? Their files will be deleted from the server.")) return;
+  await fetch("/api/jobs/clear?all=1", {method: "POST"});
+  refresh();
 };
 
 refresh();

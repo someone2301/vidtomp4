@@ -28,6 +28,8 @@ MAX_PLAYLIST = int(os.environ.get("VIDTOMP4_MAX_PLAYLIST", "50"))
 # Settings that help with sites' own rate limits (HTTP 429 / "Too Many Requests").
 COOKIES_FILE = os.environ.get("VIDTOMP4_COOKIES")  # Netscape-format cookies.txt
 SLEEP_REQUESTS = float(os.environ.get("VIDTOMP4_SLEEP_REQUESTS", "0"))
+# How many of a channel's newest uploads the title-search fallback looks through.
+CHANNEL_SCAN_LIMIT = int(os.environ.get("VIDTOMP4_CHANNEL_SCAN", "1000"))
 SLEEP_VIDEOS = float(os.environ.get("VIDTOMP4_SLEEP_VIDEOS", "0"))
 # Allowed quality choices: maximum video height, or None for the best available.
 QUALITIES = {"144": 144, "240": 240, "360": 360, "480": 480, "720": 720,
@@ -85,6 +87,37 @@ def check_cancelled(job_id: str) -> None:
             raise JobCancelled()
 
 
+def set_item(job: dict, index: int, count: int | None) -> None:
+    """Record which playlist video is in progress, timing each one for the playlist ETA.
+    Call with jobs_lock held."""
+    now = time.time()
+    if job.get("item") != index:
+        if job.get("item_started"):
+            job["items_time"] = job.get("items_time", 0) + now - job["item_started"]
+            job["items_timed"] = job.get("items_timed", 0) + 1
+        job["item"], job["item_started"] = index, now
+    job["items"] = count
+
+
+def playlist_eta(job: dict) -> float | None:
+    """Rough seconds left for the whole playlist: what is left of the current video,
+    plus the remaining videos at the average time per video so far."""
+    items, item, started = job.get("items"), job.get("item"), job.get("item_started")
+    if not (items and item and started) or job["status"] in ("done", "error", "cancelled"):
+        return None
+    elapsed = time.time() - started
+    timed = job.get("items_timed", 0)
+    if timed:
+        per_video = job["items_time"] / timed
+        current_left = job["eta"] if job.get("eta") is not None else max(per_video - elapsed, 0)
+    elif job.get("eta") is not None:
+        current_left = job["eta"]
+        per_video = elapsed + current_left  # only the first video so far: assume others are similar
+    else:
+        return None
+    return current_left + max(items - item, 0) * per_video
+
+
 class JobLogger:
     """Collects yt-dlp's messages so a failed job can say why it failed."""
 
@@ -118,8 +151,7 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
             if not job.get("title"):
                 job["title"] = info.get("playlist_title") or info.get("playlist") or info.get("title")
             if info.get("playlist_index"):
-                job["item"] = info["playlist_index"]
-                job["items"] = info.get("n_entries") or info.get("playlist_count")
+                set_item(job, info["playlist_index"], info.get("n_entries") or info.get("playlist_count"))
             if d["status"] == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate")
                 done = d.get("downloaded_bytes") or 0
@@ -208,7 +240,46 @@ def ensure_height(path: Path, max_height: int | None, job_id: str) -> Path:
     return out
 
 
-def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
+def search_channel_by_title(job_id: str, out_dir: Path, height: int | None,
+                            channel: str, query: str) -> dict:
+    """Fallback for channel search: list the channel's uploads and download the
+    ones whose title contains every word of the query."""
+    with jobs_lock:
+        jobs[job_id].update(status="searching channel", item=None, items=None, item_started=None,
+                            items_time=0, items_timed=0, finished_bytes=0, downloaded=None,
+                            total=None, eta=None, speed=None)
+    words = query.lower().split()
+    list_opts = {"extract_flat": "in_playlist", "quiet": True, "no_warnings": True,
+                 "logger": JobLogger(job_id), "cookiefile": COOKIES_FILE,
+                 "playlist_items": f"1:{CHANNEL_SCAN_LIMIT}"}
+    with YoutubeDL(list_opts) as ydl:
+        listing = ydl.extract_info(f"{channel}/videos", download=False) or {}
+    check_cancelled(job_id)
+    matches = [e for e in listing.get("entries") or []
+               if e and all(w in (e.get("title") or "").lower() for w in words)]
+    if MAX_PLAYLIST:
+        matches = matches[:MAX_PLAYLIST]
+    if not matches:
+        raise RuntimeError(f"No videos on this channel have \"{query}\" in the title "
+                           f"(checked the newest {CHANNEL_SCAN_LIMIT} uploads).")
+    title = f"{listing.get('channel') or listing.get('title') or 'channel'} - {query}"
+    with jobs_lock:
+        jobs[job_id]["title"] = title
+    for n, entry in enumerate(matches, 1):
+        with jobs_lock:
+            set_item(jobs[job_id], n, len(matches))
+        opts = ydl_options(job_id, out_dir, height, playlist=True)
+        opts["outtmpl"] = str(out_dir / f"{n:03d}_%(title).70B.%(ext)s")
+        try:
+            with YoutubeDL(opts) as ydl:
+                ydl.extract_info(entry.get("url") or entry["id"], download=True)
+        except Exception:
+            continue  # skip private/removed videos, as playlists do
+    return {"title": title}
+
+
+def run_job(job_id: str, url: str, height: int | None, playlist: bool,
+            channel: str | None = None, search: str | None = None) -> None:
     out_dir = DOWNLOAD_DIR / job_id
     out_dir.mkdir()
     try:
@@ -217,25 +288,37 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
                 info = ydl.extract_info(url, download=True)
             if not info:
                 raise RuntimeError("Nothing could be downloaded from that URL.")
+            if search and not any(out_dir.glob("*.mp4")):
+                raise RuntimeError("Channel search returned no downloadable videos.")
         except Exception as first_error:
-            if playlist:
+            if search and channel:
+                # YouTube's channel search failed or found nothing: match titles instead.
+                shutil.rmtree(out_dir)
+                out_dir.mkdir()
+                try:
+                    info = search_channel_by_title(job_id, out_dir, height, channel, search)
+                except Exception as fallback_error:
+                    raise RuntimeError(f"Channel search: {first_error} | "
+                                       f"Title search: {fallback_error}") from None
+            elif playlist:
                 raise
-            # yt-dlp could not handle the site: find the stream with a headless browser.
-            with jobs_lock:
-                jobs[job_id]["status"] = "searching page"
-            shutil.rmtree(out_dir)
-            out_dir.mkdir()
-            try:
-                found = sniff(url, lambda: check_cancelled(job_id))
-            except Exception as sniff_error:
-                raise RuntimeError(f"{first_error} | Browser fallback: {sniff_error}") from None
-            headers = {"Referer": found.page_url, "User-Agent": found.user_agent}
-            opts = ydl_options(job_id, out_dir, height, headers=headers, title=found.title or "video")
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(found.media_url, download=True)
-            info["title"] = found.title or info.get("title")
-            with jobs_lock:
-                jobs[job_id]["title"] = None  # use the page title set below, not a guess
+            else:
+                # yt-dlp could not handle the site: find the stream with a headless browser.
+                with jobs_lock:
+                    jobs[job_id]["status"] = "searching page"
+                shutil.rmtree(out_dir)
+                out_dir.mkdir()
+                try:
+                    found = sniff(url, lambda: check_cancelled(job_id))
+                except Exception as sniff_error:
+                    raise RuntimeError(f"{first_error} | Browser fallback: {sniff_error}") from None
+                headers = {"Referer": found.page_url, "User-Agent": found.user_agent}
+                opts = ydl_options(job_id, out_dir, height, headers=headers, title=found.title or "video")
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(found.media_url, download=True)
+                info["title"] = found.title or info.get("title")
+                with jobs_lock:
+                    jobs[job_id]["title"] = None  # use the page title set below, not a guess
         files = sorted(out_dir.glob("*.mp4"))
         if not files:
             with jobs_lock:
@@ -310,7 +393,10 @@ def create_job():
         return jsonify(error="Unknown quality."), 400
     playlist = bool(data.get("playlist"))
     search = str(data.get("search", "")).strip()
+    channel = None
     if search:
+        m = CHANNEL_URL.match(url)
+        channel = m.group(1) if m else None
         url = channel_search_url(url, search)
         if not url:
             return jsonify(error="Searching only works with a YouTube channel URL, "
@@ -321,7 +407,8 @@ def create_job():
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "progress": 0, "created": time.time(),
                         "url": url, "quality": quality, "search": search or None}
-    threading.Thread(target=run_job, args=(job_id, url, QUALITIES[quality], playlist), daemon=True).start()
+    threading.Thread(target=run_job, args=(job_id, url, QUALITIES[quality], playlist,
+                                                   channel, search or None), daemon=True).start()
     return jsonify(id=job_id), 202
 
 
@@ -331,7 +418,40 @@ PUBLIC_FIELDS = ("status", "progress", "error", "title", "item", "items", "count
 
 
 def public(job_id: str, job: dict) -> dict:
-    return {"id": job_id, **{k: job.get(k) for k in PUBLIC_FIELDS}}
+    return {"id": job_id, **{k: job.get(k) for k in PUBLIC_FIELDS},
+            "playlist_eta": playlist_eta(job)}
+
+
+FINISHED = ("done", "error", "cancelled")
+
+
+def remove_job(job_id: str) -> None:
+    """Delete a finished job and its files. Call with jobs_lock held."""
+    shutil.rmtree(DOWNLOAD_DIR / job_id, ignore_errors=True)
+    del jobs[job_id]
+
+
+@app.delete("/api/jobs/<job_id>")
+def delete_job(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            abort(404)
+        if job["status"] not in FINISHED:
+            return jsonify(error="Cancel the job before removing it."), 409
+        remove_job(job_id)
+    return jsonify(ok=True)
+
+
+@app.post("/api/jobs/clear")
+def clear_jobs():
+    """Remove every cancelled or failed job, and finished ones too if all=1."""
+    statuses = FINISHED if request.args.get("all") == "1" else ("error", "cancelled")
+    with jobs_lock:
+        ids = [j for j, v in jobs.items() if v["status"] in statuses]
+        for job_id in ids:
+            remove_job(job_id)
+    return jsonify(removed=len(ids))
 
 
 @app.get("/api/jobs")
