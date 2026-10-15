@@ -3,9 +3,7 @@ import hmac
 import os
 import re
 import shutil
-import importlib.util
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -32,13 +30,6 @@ COOKIES_FILE = os.environ.get("VIDTOMP4_COOKIES")  # Netscape-format cookies.txt
 SLEEP_REQUESTS = float(os.environ.get("VIDTOMP4_SLEEP_REQUESTS", "0"))
 # How many of a channel's newest uploads the title-search fallback looks through.
 CHANNEL_SCAN_LIMIT = int(os.environ.get("VIDTOMP4_CHANNEL_SCAN", "1000"))
-# Stem separation (optional; needs requirements-stems.txt).
-STEMS_AVAILABLE = importlib.util.find_spec("audio_separator") is not None
-MODELS_DIR = Path(os.environ.get("VIDTOMP4_MODELS", Path.home() / ".cache" / "vidtomp4" / "models"))
-# Separations use every CPU core, so run one at a time; others wait their turn.
-separation_slot = threading.Semaphore(1)
-# Seconds of processing per second of audio, learned from finished separations.
-separation_ratio = float(os.environ.get("VIDTOMP4_SEP_RATIO", "6"))
 SLEEP_VIDEOS = float(os.environ.get("VIDTOMP4_SLEEP_VIDEOS", "0"))
 # Allowed quality choices: maximum video height, or None for the best available.
 QUALITIES = {"144": 144, "240": 240, "360": 360, "480": 480, "720": 720,
@@ -175,7 +166,6 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
                 headers: dict | None = None, title: str | None = None) -> dict:
     with jobs_lock:
         limit = jobs[job_id].get("limit", MAX_PLAYLIST)
-        stems = jobs[job_id].get("mode") == "stems"
     def hook(d):
         check_cancelled(job_id)
         with jobs_lock:
@@ -212,15 +202,11 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
         name = "%(playlist_index)03d_%(title).70B.%(ext)s"
     else:
         name = "%(title).80B.%(ext)s"
-    if stems:
-        # Best audio only, converted to WAV for the separator.
-        output = {"format": "ba/b", "format_sort": [],
-                  "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}]}
-    else:
-        output = {"format": fmt, "format_sort": sort, "merge_output_format": "mp4",
-                  "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]}
     return {
-        **output,
+        "format": fmt,
+        "format_sort": sort,
+        "merge_output_format": "mp4",
+        "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
         "outtmpl": str(out_dir / name),
         "http_headers": headers or {},
         "restrictfilenames": True,
@@ -276,61 +262,6 @@ def ensure_height(path: Path, max_height: int | None, job_id: str) -> Path:
         raise RuntimeError(f"ffmpeg failed to re-encode (exit code {proc.returncode}).")
     path.unlink()
     return out
-
-
-def audio_seconds(path: Path) -> float:
-    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "csv=p=0", str(path)], capture_output=True, text=True)
-    try:
-        return float(probe.stdout.strip())
-    except ValueError:
-        return 0.0
-
-
-def separate_stems(job_id: str, source: Path, dest: Path) -> None:
-    """Split one song into stems in a child process (so Cancel can kill it)."""
-    global separation_ratio
-    seconds = audio_seconds(source)
-    with jobs_lock:
-        jobs[job_id].update(status="waiting for separator", eta=None, speed=None)
-    while not separation_slot.acquire(timeout=0.5):
-        check_cancelled(job_id)
-    try:
-        started = time.time()
-        with jobs_lock:
-            jobs[job_id].update(status="separating instruments (1/2)",
-                                sep_started=started, sep_estimate=seconds * separation_ratio)
-        proc = subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("stems.py")), str(source), str(dest),
-             str(MODELS_DIR)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        err_lines: list[str] = []
-        threading.Thread(target=lambda: err_lines.extend(proc.stderr), daemon=True).start()
-
-        def read_progress():
-            for line in proc.stdout:
-                if line.startswith("STEP 2"):
-                    with jobs_lock:
-                        jobs[job_id]["status"] = "splitting drums (2/2)"
-        threading.Thread(target=read_progress, daemon=True).start()
-        while proc.poll() is None:
-            try:
-                check_cancelled(job_id)
-            except JobCancelled:
-                proc.kill()
-                proc.wait()
-                raise
-            time.sleep(0.5)
-        if proc.returncode:
-            time.sleep(0.2)  # let the stderr reader finish
-            tail = " ".join(l.strip() for l in err_lines[-3:])
-            raise RuntimeError(f"Stem separation failed (exit code {proc.returncode}): {tail}")
-        if seconds:
-            separation_ratio = (time.time() - started) / seconds
-    finally:
-        separation_slot.release()
-        with jobs_lock:
-            jobs[job_id].update(sep_started=None, sep_estimate=None)
 
 
 def search_channel_by_title(job_id: str, out_dir: Path, height: int | None,
@@ -415,9 +346,7 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool,
                 info["title"] = found.title or info.get("title")
                 with jobs_lock:
                     jobs[job_id]["title"] = None  # use the page title set below, not a guess
-        with jobs_lock:
-            stems_mode = jobs[job_id].get("mode") == "stems"
-        files = sorted(out_dir.glob("*.wav" if stems_mode else "*.mp4"))
+        files = sorted(out_dir.glob("*.mp4"))
         if not files:
             with jobs_lock:
                 log = jobs[job_id].get("log", [])
@@ -433,27 +362,7 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool,
             else:
                 hint = "yt-dlp finished without producing a file."
             detail = " | ".join(reasons[-3:] or log[-3:])
-            kind = "audio file" if stems_mode else "MP4"
-            raise RuntimeError(f"No {kind} was produced. {hint}" + (f" Details: {detail}" if detail else ""))
-        if stems_mode:
-            final = out_dir / f"{safe_name(info.get('title') or 'stems')}_stems.zip"
-            with zipfile.ZipFile(final, "w", zipfile.ZIP_DEFLATED) as zf:
-                for n, f in enumerate(files, 1):
-                    if len(files) > 1:
-                        with jobs_lock:
-                            set_item(jobs[job_id], n, len(files))
-                    folder = out_dir / f.stem
-                    separate_stems(job_id, f, folder)
-                    for stem in sorted(folder.rglob("*.wav")):
-                        zf.write(stem, f"{f.stem}/{stem.relative_to(folder)}")
-                    shutil.rmtree(folder)
-                    f.unlink()
-            with jobs_lock:
-                jobs[job_id].update(status="done", progress=100, file=str(final),
-                                    mimetype="application/zip", size=final.stat().st_size,
-                                    speed=None, eta=None, title=info.get("title"),
-                                    count=len(files), finished=time.time())
-            return
+            raise RuntimeError(f"No MP4 was produced. {hint}" + (f" Details: {detail}" if detail else ""))
         with jobs_lock:
             jobs[job_id]["status"] = "processing"
         files = [ensure_height(f, height, job_id) for f in files]
@@ -501,7 +410,7 @@ threading.Thread(target=cleanup_loop, daemon=True).start()
 
 @app.get("/")
 def index():
-    return render_template("index.html", max_playlist=MAX_PLAYLIST, stems=STEMS_AVAILABLE)
+    return render_template("index.html", max_playlist=MAX_PLAYLIST)
 
 
 @app.post("/api/jobs")
@@ -514,12 +423,6 @@ def create_job():
     if quality not in QUALITIES:
         return jsonify(error="Unknown quality."), 400
     playlist = bool(data.get("playlist"))
-    mode = str(data.get("mode", "video"))
-    if mode not in ("video", "stems"):
-        return jsonify(error="Unknown output type."), 400
-    if mode == "stems" and not STEMS_AVAILABLE:
-        return jsonify(error="Stem separation is not installed on the server. "
-                             "See the README's Drum stems section."), 400
     try:
         limit = int(data.get("limit", MAX_PLAYLIST))
     except (TypeError, ValueError):
@@ -540,8 +443,7 @@ def create_job():
     job_id = uuid.uuid4().hex
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "progress": 0, "created": time.time(),
-                        "url": url, "quality": quality, "search": search or None, "limit": limit,
-                        "mode": mode}
+                        "url": url, "quality": quality, "search": search or None, "limit": limit}
     threading.Thread(target=run_job, args=(job_id, url, QUALITIES[quality], playlist,
                                                    channel, search or None), daemon=True).start()
     return jsonify(id=job_id), 202
@@ -549,14 +451,11 @@ def create_job():
 
 PUBLIC_FIELDS = ("status", "progress", "error", "title", "item", "items", "count", "url",
                  "quality", "search", "created", "downloaded", "total", "finished_bytes",
-                 "speed", "eta", "size", "limit", "mode")
+                 "speed", "eta", "size", "limit")
 
 
 def public(job_id: str, job: dict) -> dict:
-    sep_left = None
-    if job.get("sep_started") and job.get("sep_estimate"):
-        sep_left = max(job["sep_estimate"] - (time.time() - job["sep_started"]), 0)
-    return {"id": job_id, **{k: job.get(k) for k in PUBLIC_FIELDS}, "sep_eta": sep_left,
+    return {"id": job_id, **{k: job.get(k) for k in PUBLIC_FIELDS},
             "playlist_eta": playlist_eta(job), "playlist_size": playlist_size(job)}
 
 

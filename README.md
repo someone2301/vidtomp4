@@ -57,31 +57,6 @@ If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tri
 - The "Max videos" box on the page sets how many videos a playlist, channel or search downloads (`0` = no limit). Its starting value comes from `VIDTOMP4_MAX_PLAYLIST` (default 50).
 - yt-dlp needs a JavaScript runtime such as Deno for full YouTube support. Install it somewhere on the service's PATH, such as `/usr/local/bin`.
 
-## Drum stems (optional)
-Choose "Drum stems (WAV)" under Output to get a zip of WAV stems instead of a video:
-
-```
-<title>/vocals.wav  drums.wav  bass.wav  other.wav
-<title>/drums/kick.wav  snare.wav  hihat.wav  toms.wav  ride.wav  crash.wav
-```
-
-Step 1 splits the song with Demucs (`htdemucs`); step 2 splits the drums with the MDX23C DrumSep model (by aufr33 and jarredou). Both run through [audio-separator](https://pypi.org/project/audio-separator/) in a separate process, one song at a time, so Cancel stops it immediately.
-
-Install (large download). Installing the CPU-only PyTorch first avoids about 3 GB of GPU libraries:
-```sh
-~/vidtomp4/venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
-~/vidtomp4/venv/bin/pip install -r requirements-stems.txt
-sudo systemctl restart vidtomp4
-```
-Models download on first use to `VIDTOMP4_MODELS` (default `~/.cache/vidtomp4/models`; DrumSep is about 420 MB). On CPU, expect several minutes per song; the page shows an estimate that improves after the first separation.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `VIDTOMP4_MODELS` | `~/.cache/vidtomp4/models` | Where separation models are stored |
-| `VIDTOMP4_STEMS_MODEL` | `htdemucs.yaml` | Step 1 model; `htdemucs_ft.yaml` is slower but cleaner |
-| `VIDTOMP4_DRUMS_MODEL` | `MDX23C-DrumSep-aufr33-jarredou.ckpt` | Step 2 model |
-| `VIDTOMP4_SEP_RATIO` | `6` | Starting guess for seconds of work per second of audio |
-
 ## YouTube "HTTP Error 403: Forbidden"
 YouTube changes often. If downloads fail with 403:
 1. Update yt-dlp: `~/vidtomp4/venv/bin/pip install -U "yt-dlp[default]"` (or the pre-release: add `--pre`), then restart the service.
