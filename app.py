@@ -17,11 +17,16 @@ from sniff import sniff
 
 DOWNLOAD_DIR = Path(os.environ.get("VIDTOMP4_DIR", "/tmp/vidtomp4"))
 MAX_AGE_SECONDS = int(os.environ.get("VIDTOMP4_MAX_AGE", "600"))
+# 0 means no limit for MAX_FILESIZE and MAX_PLAYLIST.
 MAX_FILESIZE = int(os.environ.get("VIDTOMP4_MAX_BYTES", str(1024**3)))  # 1 GiB, per video
 # Optional login. Set both to require a username and password (HTTP basic auth).
 AUTH_USER = os.environ.get("VIDTOMP4_USER")
 AUTH_PASSWORD = os.environ.get("VIDTOMP4_PASSWORD")
 MAX_PLAYLIST = int(os.environ.get("VIDTOMP4_MAX_PLAYLIST", "50"))
+# Settings that help with sites' own rate limits (HTTP 429 / "Too Many Requests").
+COOKIES_FILE = os.environ.get("VIDTOMP4_COOKIES")  # Netscape-format cookies.txt
+SLEEP_REQUESTS = float(os.environ.get("VIDTOMP4_SLEEP_REQUESTS", "0"))
+SLEEP_VIDEOS = float(os.environ.get("VIDTOMP4_SLEEP_VIDEOS", "0"))
 # Allowed quality choices: maximum video height, or None for the best available.
 QUALITIES = {"144": 144, "240": 240, "360": 360, "480": 480, "720": 720,
              "1080": 1080, "best": None}
@@ -110,10 +115,21 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
         "http_headers": headers or {},
         "restrictfilenames": True,
         "noplaylist": not playlist,
-        "playlist_items": f"1:{MAX_PLAYLIST}",
+        "playlist_items": f"1:{MAX_PLAYLIST}" if MAX_PLAYLIST else None,
         # In a playlist, skip private/removed videos instead of failing the whole job.
         "ignoreerrors": playlist,
-        "max_filesize": MAX_FILESIZE,
+        "max_filesize": MAX_FILESIZE or None,
+        "cookiefile": COOKIES_FILE,
+        "sleep_interval_requests": SLEEP_REQUESTS or None,
+        # Random pause of SLEEP_VIDEOS to 2x SLEEP_VIDEOS seconds before each video.
+        "sleep_interval": SLEEP_VIDEOS or None,
+        "max_sleep_interval": SLEEP_VIDEOS * 2 or None,
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 5,
+        "retry_sleep_functions": {"http": lambda n: min(2 ** n, 60),
+                                  "fragment": lambda n: min(2 ** n, 60),
+                                  "extractor": lambda n: min(5 * 2 ** n, 120)},
         "progress_hooks": [hook],
         "logger": JobLogger(job_id),
         "quiet": True,
@@ -176,7 +192,7 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
             reasons = [m for m in log if any(k in m.lower() for k in
                        ("error", "warning", "larger than", "max-filesize", "skipping", "not available"))]
             if any("larger than" in m or "max-filesize" in m for m in log):
-                hint = (f"The video is larger than the {MAX_FILESIZE // 1024**2} MB limit. "
+                hint = (f"The video is larger than the {MAX_FILESIZE / 1024**2:g} MB limit. "
                         "Choose a lower quality or raise VIDTOMP4_MAX_BYTES.")
             else:
                 hint = "yt-dlp finished without producing a file."

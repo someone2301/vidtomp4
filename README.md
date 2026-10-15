@@ -38,8 +38,11 @@ Sites change often, so update yt-dlp regularly: `/opt/vidtomp4/venv/bin/pip inst
 | `VIDTOMP4_USER` / `VIDTOMP4_PASSWORD` | (unset) | Set both to require a login |
 | `VIDTOMP4_DIR` | `/tmp/vidtomp4` | Where files are stored |
 | `VIDTOMP4_MAX_AGE` | `600` | Seconds after a job finishes before its files are deleted (checked every minute; leftovers from before a restart are also removed) |
-| `VIDTOMP4_MAX_BYTES` | `1073741824` | Largest download allowed, per video |
-| `VIDTOMP4_MAX_PLAYLIST` | `50` | Most videos downloaded from one playlist |
+| `VIDTOMP4_MAX_BYTES` | `1073741824` | Largest download allowed, per video (`0` = no limit) |
+| `VIDTOMP4_MAX_PLAYLIST` | `50` | Most videos downloaded from one playlist (`0` = no limit) |
+| `VIDTOMP4_COOKIES` | (unset) | Path to a Netscape-format `cookies.txt`, sent to sites (helps with YouTube rate limits and bot checks) |
+| `VIDTOMP4_SLEEP_REQUESTS` | `0` | Seconds to wait between requests while reading a page or playlist |
+| `VIDTOMP4_SLEEP_VIDEOS` | `0` | Wait a random 1x to 2x this many seconds before each video |
 | `VIDTOMP4_BROWSERS` | `2` | Max headless browsers running at once |
 | `VIDTOMP4_SNIFF_SECONDS` | `20` | How long to watch a page for a video stream |
 | `VIDTOMP4_CHROMIUM` | (unset) | Path to a Chromium binary, if not using Playwright's |
