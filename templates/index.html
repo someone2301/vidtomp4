@@ -13,6 +13,13 @@
   button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
   progress { width: 100%; margin-top: 1rem; }
   #status { margin-top: 1rem; white-space: pre-wrap; }
+  #jobs { margin-top: 2rem; }
+  .job { border: 1px solid #ccc; border-radius: 6px; padding: .75rem; margin-bottom: .75rem; }
+  .job .top { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
+  .job .name { font-weight: 600; overflow-wrap: anywhere; }
+  .job .meta, .job .url { font-size: .85rem; color: #555; overflow-wrap: anywhere; }
+  .job progress { margin-top: .5rem; }
+  .job .err { color: #b00020; font-size: .9rem; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -32,52 +39,122 @@
   <input id="search" type="search" placeholder="Search this channel (optional)" aria-label="Search this channel">
   <label><input id="playlist" type="checkbox"> Whole playlist</label>
   <button id="go">Convert</button>
-  <button id="cancel" type="button" hidden>Cancel</button>
 </form>
-<progress id="bar" max="100" value="0" hidden></progress>
 <div id="status"></div>
+<section id="jobs">
+  <h2>Jobs</h2>
+  <p id="empty">No jobs yet.</p>
+  <div id="list"></div>
+</section>
 <script>
 const $ = id => document.getElementById(id);
-let jobId = null;
-$("cancel").onclick = async () => {
-  if (!jobId) return;
-  $("cancel").disabled = true;
-  await fetch(`/api/jobs/${jobId}/cancel`, {method: "POST"});
-};
-const finish = () => { $("go").disabled = false; $("cancel").hidden = true; jobId = null; };
+// Jobs started from this browser tab; their file downloads automatically when ready.
+const mine = new Set();
+const opened = new Set();
+const ACTIVE = new Set(["queued", "downloading", "processing", "searching page", "cancelling"]);
+
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+function fmtTime(sec) {
+  if (sec == null) return "";
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
+}
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;  // textContent, never innerHTML: titles come from other sites
+  return e;
+}
+
+function describe(j) {
+  const parts = [];
+  if (j.items) parts.push(`video ${j.item} of ${j.items}`);
+  if (j.status === "downloading") {
+    const got = (j.finished_bytes || 0) + (j.downloaded || 0);
+    const total = j.total ? (j.finished_bytes || 0) + j.total : null;
+    parts.push(total ? `${fmtBytes(got)} of ${fmtBytes(total)}` : fmtBytes(got));
+    if (j.speed) parts.push(fmtBytes(j.speed) + "/s");
+    if (j.eta != null) parts.push(fmtTime(j.eta) + " left" + (j.items > 1 ? " (this video)" : ""));
+  } else if (j.status === "done") {
+    parts.push(fmtBytes(j.size));
+  } else if (j.status === "processing") {
+    parts.push("converting, time unknown");
+  }
+  return parts.join(" · ");
+}
+
+function render(list) {
+  $("empty").hidden = list.length > 0;
+  const box = $("list");
+  box.replaceChildren();
+  for (const j of list) {
+    const card = el("div", "job");
+    const top = el("div", "top");
+    top.append(el("span", "name", j.title || (j.search ? `Search: ${j.search}` : "Untitled")),
+               el("span", "meta", `${j.status} · ${j.quality === "best" ? "best" : j.quality + "p"}`));
+    card.append(top, el("div", "url", j.url));
+    if (ACTIVE.has(j.status)) {
+      const bar = el("progress");
+      bar.max = 100;
+      if (j.status === "downloading") bar.value = j.progress || 0;  // no value = animated "busy" bar
+      card.append(bar);
+    }
+    const info = describe(j);
+    if (info) card.append(el("div", "meta", info));
+    if (j.status === "error") card.append(el("div", "err", j.error));
+    const actions = el("div");
+    if (ACTIVE.has(j.status) && j.status !== "cancelling") {
+      const b = el("button", null, "Cancel");
+      b.onclick = async () => { b.disabled = true; await fetch(`/api/jobs/${j.id}/cancel`, {method: "POST"}); refresh(); };
+      actions.append(b);
+    }
+    if (j.status === "done") {
+      const a = el("a", null, j.count > 1 ? `Download zip (${j.count} videos)` : "Download MP4");
+      a.href = `/api/jobs/${j.id}/file`;
+      actions.append(a);
+      if (mine.has(j.id) && !opened.has(j.id)) { opened.add(j.id); a.click(); }
+    }
+    if (actions.childElementCount) { actions.style.marginTop = ".5rem"; card.append(actions); }
+    box.append(card);
+  }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/jobs");
+    if (r.ok) render(await r.json());
+  } catch (e) { /* server restarting; try again next tick */ }
+}
+
 $("f").onsubmit = async e => {
   e.preventDefault();
-  $("go").disabled = true; $("bar").hidden = false; $("bar").value = 0;
-  $("status").textContent = "Queued...";
-  const r = await fetch("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"},
-                                     body: JSON.stringify({url: $("url").value, quality: $("quality").value,
-                                                           playlist: $("playlist").checked,
-                                                           search: $("search").value})});
-  const j = await r.json();
-  if (!r.ok) { $("status").textContent = j.error; $("go").disabled = false; return; }
-  jobId = j.id; $("cancel").hidden = false; $("cancel").disabled = false;
-  const poll = setInterval(async () => {
-    const s = await (await fetch(`/api/jobs/${j.id}`)).json();
-    $("bar").value = s.progress || 0;
-    $("status").textContent = s.status + (s.items ? ` (video ${s.item} of ${s.items})` : "")
-                              + (s.title ? ": " + s.title : "");
-    if (s.status === "done") {
-      clearInterval(poll); finish();
-      $("status").innerHTML = "";
-      const a = document.createElement("a");
-      a.href = `/api/jobs/${j.id}/file`; a.textContent = s.count > 1 ? `Download ${s.title || "playlist"} (${s.count} videos, zip)`
-                                  : "Download " + (s.title || "video") + ".mp4";
-      $("status").appendChild(a); a.click();
-    } else if (s.status === "error") {
-      clearInterval(poll); finish();
-      $("status").textContent = "Error: " + s.error;
-    } else if (s.status === "cancelled") {
-      clearInterval(poll); finish();
-      $("bar").hidden = true;
-      $("status").textContent = "Cancelled.";
-    }
-  }, 1000);
+  $("go").disabled = true;
+  $("status").textContent = "Starting...";
+  try {
+    const r = await fetch("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"},
+                                       body: JSON.stringify({url: $("url").value, quality: $("quality").value,
+                                                             playlist: $("playlist").checked,
+                                                             search: $("search").value})});
+    const j = await r.json();
+    if (!r.ok) { $("status").textContent = j.error; return; }
+    mine.add(j.id);
+    $("status").textContent = "";
+    $("url").value = ""; $("search").value = "";
+    refresh();
+  } finally {
+    $("go").disabled = false;
+  }
 };
+
+refresh();
+setInterval(refresh, 1000);
 </script>
 </body>
 </html>

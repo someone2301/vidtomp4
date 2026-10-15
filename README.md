@@ -56,6 +56,7 @@ If yt-dlp cannot handle a site, the app opens the page in headless Chromium, tri
 - `VIDTOMP4_MAX_PLAYLIST` (default 50) also limits how many videos a channel or search downloads.
 
 ## Notes
+- The Jobs section lists every job on the server (from any browser or device), refreshed every second, with download size, speed and estimated time left. Each running job has its own Cancel button.
 - The Cancel button stops a job at any stage (downloading, browser search or re-encoding) and deletes its files right away.
 - If a site has no stream at or below the chosen quality, the video is re-encoded down to it. "Best available" is never re-encoded.
 - In playlist mode, private or removed videos are skipped. A large playlist at high quality needs a lot of disk space, since files are kept until they expire.

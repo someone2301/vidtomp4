@@ -115,16 +115,23 @@ def ydl_options(job_id: str, out_dir: Path, height: int | None, playlist: bool =
         with jobs_lock:
             job = jobs[job_id]
             info = d.get("info_dict") or {}
+            if not job.get("title"):
+                job["title"] = info.get("playlist_title") or info.get("playlist") or info.get("title")
             if info.get("playlist_index"):
                 job["item"] = info["playlist_index"]
                 job["items"] = info.get("n_entries") or info.get("playlist_count")
             if d["status"] == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                done = d.get("downloaded_bytes") or 0
                 if total:
-                    job["progress"] = round(d.get("downloaded_bytes", 0) * 100 / total, 1)
-                job["status"] = "downloading"
+                    job["progress"] = round(done * 100 / total, 1)
+                job.update(status="downloading", downloaded=done, total=total,
+                           speed=d.get("speed"), eta=d.get("eta"))
             elif d["status"] == "finished":
-                job["status"] = "processing"
+                # Video and audio are separate downloads; keep a running total of both.
+                job["finished_bytes"] = job.get("finished_bytes", 0) + (
+                    d.get("total_bytes") or d.get("downloaded_bytes") or 0)
+                job.update(status="processing", speed=None, eta=None)
 
     if height:
         # Best video at or below the chosen height plus best audio, or a pre-merged file.
@@ -227,6 +234,8 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(found.media_url, download=True)
             info["title"] = found.title or info.get("title")
+            with jobs_lock:
+                jobs[job_id]["title"] = None  # use the page title set below, not a guess
         files = sorted(out_dir.glob("*.mp4"))
         if not files:
             with jobs_lock:
@@ -254,6 +263,7 @@ def run_job(job_id: str, url: str, height: int | None, playlist: bool) -> None:
                     f.unlink()
         with jobs_lock:
             jobs[job_id].update(status="done", progress=100, file=str(final), mimetype=mimetype,
+                                size=final.stat().st_size, speed=None, eta=None,
                                 title=info.get("title"), count=len(files),
                                 finished=time.time())
     except JobCancelled:
@@ -309,9 +319,26 @@ def create_job():
     playlist = playlist or is_list_url(url)
     job_id = uuid.uuid4().hex
     with jobs_lock:
-        jobs[job_id] = {"status": "queued", "progress": 0, "created": time.time()}
+        jobs[job_id] = {"status": "queued", "progress": 0, "created": time.time(),
+                        "url": url, "quality": quality, "search": search or None}
     threading.Thread(target=run_job, args=(job_id, url, QUALITIES[quality], playlist), daemon=True).start()
     return jsonify(id=job_id), 202
+
+
+PUBLIC_FIELDS = ("status", "progress", "error", "title", "item", "items", "count", "url",
+                 "quality", "search", "created", "downloaded", "total", "finished_bytes",
+                 "speed", "eta", "size")
+
+
+def public(job_id: str, job: dict) -> dict:
+    return {"id": job_id, **{k: job.get(k) for k in PUBLIC_FIELDS}}
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    with jobs_lock:
+        items = sorted(jobs.items(), key=lambda kv: kv[1]["created"], reverse=True)
+        return jsonify([public(j, v) for j, v in items])
 
 
 @app.get("/api/jobs/<job_id>")
@@ -320,8 +347,7 @@ def job_status(job_id):
         job = jobs.get(job_id)
         if not job:
             abort(404)
-        return jsonify({k: job.get(k) for k in ("status", "progress", "error", "title",
-                                         "item", "items", "count")})
+        return jsonify(public(job_id, job))
 
 
 @app.post("/api/jobs/<job_id>/cancel")
